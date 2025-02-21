@@ -1,21 +1,26 @@
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-
+from sklearn.preprocessing import StandardScaler,MinMaxScaler
 from sklearn.feature_selection import mutual_info_classif
 from imblearn.over_sampling import SMOTE
+import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization, SpatialDropout1D
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.layers import LeakyReLU
 from sklearn.metrics import classification_report, precision_score, recall_score, f1_score
 import random
-import tensorflow as tf
+from tensorflow.keras.layers import Layer
+
+# Đặt seed để đảm bảo tái lập kết quả
 seed_value = 50
 np.random.seed(seed_value)
 random.seed(seed_value)
 tf.random.set_seed(seed_value)
+
 # 1. Load dữ liệu
 data = pd.read_csv('diabetes.csv')
 
@@ -40,72 +45,82 @@ X, y = smote.fit_resample(X, y)
 scaler = StandardScaler()
 X = scaler.fit_transform(X)
 
-# 6. Reshape dữ liệu cho LSTM: (samples, timesteps, features)
-# Với dữ liệu tabular, ta xem mỗi mẫu là một chuỗi với 1 timestep.
+# 6. Reshape dữ liệu cho LSTM: (samples, timesteps=1, features)
 X = X.reshape(X.shape[0], 1, X.shape[1])
 
 # 7. Chia dữ liệu thành tập train và test
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# 8. Xây dựng mô hình LSTM cải tiến
-model = Sequential()
+# 8. Xây dựng mô hình LSTM tối ưu
+def build_optimized_lstm(input_shape):
+    model = Sequential()
 
-# Lớp LSTM 1: tăng số units, thêm kernel regularization và BatchNormalization
-model.add(LSTM(128, 
-               return_sequences=True, 
-               input_shape=(1, X.shape[2]), 
-               activation='tanh',
-               kernel_regularizer='l2',
-               recurrent_regularizer='l2'))
-model.add(BatchNormalization())
-model.add(Dropout(0.4))
+    # LSTM1 Layer
+    model.add(LSTM(units=96, return_sequences=True, input_shape=input_shape,
+                   kernel_regularizer=l2(0.01), recurrent_regularizer=l2(0.01), activity_regularizer=l2(0.01)))
+    model.add(BatchNormalization())
+    model.add(SpatialDropout1D(0.5))
 
-# Lớp LSTM 2
-model.add(LSTM(64, 
-               return_sequences=True, 
-               activation='tanh',
-               kernel_regularizer='l2',
-               recurrent_regularizer='l2'))
-model.add(BatchNormalization())
-model.add(Dropout(0.3))
+    # LSTM2 Layer
+    model.add(LSTM(units=96, return_sequences=True,
+                   kernel_regularizer=l2(0.01), recurrent_regularizer=l2(0.01), activity_regularizer=l2(0.01)))
+    model.add(BatchNormalization())
+    model.add(SpatialDropout1D(0.5))
 
-# Lớp LSTM 3 (không trả về chuỗi)
-model.add(LSTM(32, 
-               activation='tanh',
-               kernel_regularizer='l2'))
-model.add(BatchNormalization())
-model.add(Dropout(0.2))
+    # LSTM3 Layer
+    model.add(LSTM(units=96, return_sequences=False,
+                   kernel_regularizer=l2(0.01), recurrent_regularizer=l2(0.01), activity_regularizer=l2(0.01)))
+    model.add(BatchNormalization())
 
-# Lớp Dense đầu ra
-model.add(Dense(1, activation='sigmoid'))
+    # Fully Connected Layer
+    model.add(Dense(128))
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(Dropout(0.5))
 
-# 9. Biên dịch mô hình với Adam optimizer và learning rate tùy chỉnh
-optimizer = Adam(learning_rate=0.001)
-model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
+    model.add(Dense(64))
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(Dropout(0.5))
 
-# 10. Thiết lập các callbacks
-early_stopping = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True, verbose=1)
-reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6, verbose=1)
-checkpoint = ModelCheckpoint('best_model.h5', monitor='val_loss', save_best_only=True, verbose=1)
+    # Output Layer
+    model.add(Dense(1, activation='sigmoid'))
 
-# 11. Huấn luyện mô hình
-history = model.fit(
-    X_train, 
-    y_train, 
-    epochs=300, 
-    batch_size=64, 
-    validation_split=0.2, 
-    callbacks=[early_stopping, reduce_lr, checkpoint],
-    verbose=1
-)
+    return model
 
-# 12. Đánh giá mô hình trên tập test
+# 9. Huấn luyện mô hình
+def train_lstm_model(X_train, y_train, batch_size=64, learning_rate=0.001):
+    input_shape = (X_train.shape[1], X_train.shape[2])
+    model = build_optimized_lstm(input_shape)
+
+    optimizer = Adam(learning_rate=learning_rate)
+
+    model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+
+    early_stopping = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True, verbose=1)
+    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6, verbose=1)
+    checkpoint = ModelCheckpoint('best_model.h5', monitor='val_loss', save_best_only=True, verbose=1)
+
+    history = model.fit(
+        X_train, 
+        y_train, 
+        epochs=300, 
+        batch_size=batch_size, 
+        validation_split=0.2, 
+        callbacks=[early_stopping, reduce_lr, checkpoint],
+        verbose=1
+    )
+
+    return model, history
+
+# Gọi hàm huấn luyện
+model, history = train_lstm_model(X_train, y_train)
+
+# 10. Đánh giá mô hình trên tập test
 loss, accuracy = model.evaluate(X_test, y_test, verbose=0)
 print(f'Test Accuracy: {accuracy * 100:.2f}%')
 
-# 13. Tính toán và in ra các chỉ số Precision, Recall, F1-score
+# 11. Tính toán và in ra các chỉ số Precision, Recall, F1-score
 y_pred_prob = model.predict(X_test)
-y_pred = (y_pred_prob > 0.5).astype("int32")
+y_pred = (y_pred_prob > 0.45).astype("int32")
 
 print("Classification Report:")
 print(classification_report(y_test, y_pred))
