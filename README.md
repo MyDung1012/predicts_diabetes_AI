@@ -1,1 +1,1 @@
-làm lẹ rồi còn nghỉ chơi!!
+A reseach in using AI to predict Diabetes
