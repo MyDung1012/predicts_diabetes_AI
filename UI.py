@@ -209,7 +209,6 @@ def pretty_label(pred: int) -> str:
 with st.sidebar:
     st.header("⚙️ Settings")
     uploaded = st.file_uploader("Upload CSV (tùy chọn)", type=["csv"]) 
-    test_size = st.slider("Test size", 0.1, 0.5, 0.30, 0.05)
     threshold = st.slider("Decision threshold", 0.05, 0.95, 0.70, 0.05)
     choice_eval_key = st.selectbox("Select best by", ["ROC AUC", "F1-score", "Accuracy"]) 
     use_ensemble = st.checkbox("Use ensemble (average probability)", value=True)
@@ -221,8 +220,9 @@ with st.sidebar:
 raw_df = load_dataset(uploaded)
 X_all, y_all = preprocess_dataframe(raw_df)
 
+# Use a small test split just for model evaluation display purposes
 X_train, X_test, y_train, y_test = train_test_split(
-    X_all, y_all, test_size=test_size, random_state=42, stratify=y_all
+    X_all, y_all, test_size=0.3, random_state=42, stratify=y_all
 )
 
 # We keep a transformer cache for consistent transforms
@@ -374,8 +374,12 @@ st.markdown("---")
 st.subheader("🧍 Predict for a New Patient")
 col1, col2, col3 = st.columns(3)
 with col1:
-    age = st.number_input("Age", 0.0, 120.0, 40.0, 0.1)
-    bmi = st.number_input("BMI", 0.0, 80.0, 27.0, 0.1)
+    age = st.number_input("Age", min_value=1, max_value=100, value=40, step=1)
+    height = st.number_input("Height (cm)", min_value=50.0, max_value=250.0, value=170.0, step=0.1)
+    weight = st.number_input("Weight (kg)", min_value=10.0, max_value=300.0, value=70.0, step=0.1)
+    # Calculate and display BMI in real-time
+    bmi = weight / ((height / 100) ** 2)
+    st.number_input("BMI (Calculated)", value=bmi, disabled=True, format="%.2f")
 with col2:
     gender = st.selectbox("Gender", ["Male", "Female"], index=0)
     htn = st.selectbox("Hypertension", [0, 1], index=0)
@@ -455,7 +459,7 @@ if st.button("🔮 Predict"):
             continue
 
     if len(probs_for_ensemble) == 0:
-        st.error("❌ Không thể dự đoán với bất kỳ mô hình nào.")
+        st.error(" Không thể dự đoán với bất kỳ mô hình nào.")
     else:
         if st.session_state["use_ensemble"]:
             final_proba = float(np.mean(probs_for_ensemble))
@@ -485,7 +489,7 @@ if st.button("🔮 Predict"):
 # 5) Debug / Logs
 # =============================
 st.markdown("---")
-st.subheader("🧯 Debug Info")
+st.subheader(" Debug Info")
 with st.expander("Model load & transform attempts"):
     st.write(model_dbg)
 
