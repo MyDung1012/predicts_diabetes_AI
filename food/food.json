@@ -1,0 +1,28 @@
+[
+  {
+    "Breakfast Suggestion": "Tofu scramble with vegetables",
+    "Lunch Suggestion": "Vegetable stir-fry with rice noodles",
+    "Dinner Suggestion": "Lentil soup with whole-grain bread",
+    "Snack Suggestion": "Fruit salad with nuts",
+    "Protein": 50,
+    "Sugar": 75.0,
+    "Sodium": 10.0,
+    "Carbohydrates": 150,
+    "Fiber": 18.0,
+    "Fat": 30,
+    "Calories": 1070
+  },
+  {
+    "Breakfast Suggestion": "Vegan breakfast burrito with tofu and vegetables",
+    "Lunch Suggestion": "Vegan chili with brown rice",
+    "Dinner Suggestion": "Lentil stew with whole wheat bread",
+    "Snack Suggestion": "Fruit and nut mix",
+    "Protein": 50,
+    "Sugar": 70.0,
+    "Sodium": 10.0,
+    "Carbohydrates": 140,
+    "Fiber": 16.8,
+    "Fat": 40,
+    "Calories": 1120
+  }
+]

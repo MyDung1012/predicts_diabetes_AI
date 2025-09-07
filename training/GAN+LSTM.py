@@ -12,9 +12,6 @@ from tensorflow.keras.optimizers import Adam
 from sklearn.metrics import classification_report, precision_score, recall_score, f1_score, roc_auc_score
 from sklearn.preprocessing import FunctionTransformer
 from sklearn.decomposition import PCA
-from xgboost import XGBClassifier
-from sklearn.ensemble import AdaBoostClassifier, StackingClassifier
-from sklearn.linear_model import LogisticRegression
 
 seed_value = 50
 np.random.seed(seed_value)
@@ -29,34 +26,27 @@ data = pd.get_dummies(data, columns=['smoking_history'], drop_first=True)
 data.fillna(0, inplace=True)
 
 def data_preprocessing(X, y, fit):
-
     # 🔁 Scale tập dữ liệu
     log_transformer = FunctionTransformer(np.log1p, validate=True)
-
     # Áp dụng vào X_train
     X = log_transformer.transform(X)
     X = pd.DataFrame(X)  # Chuyển lại thành DataFrame nếu cần dùng .fillna()
     X.fillna(0, inplace=True)
-
     global scaler
     if fit:
         scaler = MinMaxScaler()
         X = scaler.fit_transform(X)
     else:
         X = scaler.transform(X)
-
     # 🔎 Kiểm tra và xử lý giá trị âm trước khi áp dụng log-transform
     if (X < 0).any():
         print("⚠️ Warning: Negative values detected in X_train. Log transformation might fail.")
-
-
     global pca
     if fit:
         pca = PCA(n_components=0.99)
         X = pca.fit_transform(X)
     else:
         X = pca.transform(X)
-
     return X, y
 
 
@@ -151,55 +141,109 @@ X_train, y_train = data_preprocessing(X_train, y_train, fit=True)
 X_test, y_test = data_preprocessing(X_test, y_test, fit=False)
 
 
+X_train = X_train.reshape((X_train.shape[0], 1, X_train.shape[1]))  # (samples, timesteps=1, features)
+X_test = X_test.reshape((X_test.shape[0], 1, X_test.shape[1]))      # (samples, timesteps=1, features)
 
-# --------------- 5. Xây dựng mô hình Stacking ---------------
-def build_stacking_model(random_state= 50):
-    base_estimators = [
-        ('xgb', XGBClassifier(random_state=random_state)),
-        ('ada', AdaBoostClassifier(random_state=random_state))
-    ]
-    final_estimator = LogisticRegression(random_state=random_state)
+# Xây dựng mô hình LSTM
+lstm_model = Sequential([
+    LSTM(128, activation='tanh', recurrent_activation='sigmoid', return_sequences=True),
+    Dropout(0.4),
+    LSTM(64, activation='tanh', recurrent_activation='sigmoid', return_sequences=False),
+    Dropout(0.4),
+    Dense(32, activation='relu'),
+    Dense(1, activation='sigmoid')
+])
+# Biên dịch mô hình
+optimizer = Adam(learning_rate=0.0001)
+lstm_model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
+# Huấn luyện mô hình LSTM với class weights và callbacks
+history = lstm_model.fit(X_train, y_train,
+               epochs=100,
+               batch_size=32,
+               validation_data=(X_test, y_test),
+               verbose=1,
+               )
 
-    stacking_model = StackingClassifier(
-        estimators=base_estimators,
-        final_estimator=final_estimator,
-        cv=5,
-        passthrough=True
-    )
-    return stacking_model
+# ======================
+# Save training history
+# ======================
+history_df = pd.DataFrame(history.history)
+history_df.index += 1
+history_df.reset_index(inplace=True)
+history_df.rename(columns={"index": "Epoch"}, inplace=True)
+history_df.to_excel("history/GAN_LSTM_history.xlsx", index=False)
 
-stack_model = build_stacking_model(random_state=42)
-stack_model.fit(X_train, y_train)
-y_pred = stack_model.predict(X_test)
+# ======================
+# Evaluate
+# ======================
+loss, accuracy = lstm_model.evaluate(X_test, y_test, verbose=0)
+print(f'Test Accuracy: {accuracy * 100:.2f}%')
 
-print("Stacking Ensemble Classification Report:")
-print(classification_report(y_test, y_pred))
-print(f"Precision: {precision_score(y_test, y_pred):.5f}")
-print(f"Recall: {recall_score(y_test, y_pred):.5f}")
-print(f"F1 Score: {f1_score(y_test, y_pred):.5f}")
-print(f"Accuracy: {stack_model.score(X_test, y_test):.5f}")
+# Predictions
+y_pred_prob = lstm_model.predict(X_test, verbose=0)
+threshold = 0.74
+y_pred_adjusted = (y_pred_prob > threshold).astype("int32")
 
-from sklearn.metrics import balanced_accuracy_score, confusion_matrix, ConfusionMatrixDisplay
+print("Classification Report:")
+print(classification_report(y_test, y_pred_adjusted))
 
+precision = precision_score(y_test, y_pred_adjusted)
+recall = recall_score(y_test, y_pred_adjusted)
+f1 = f1_score(y_test, y_pred_adjusted)
+auc_score = roc_auc_score(y_test, y_pred_prob)
+
+print(f"Precision: {precision:.5f}")
+print(f"Recall: {recall:.5f}")
+print(f"F1 Score: {f1:.5f}")
+print(f"ROC-AUC Score: {auc_score:.5f}")
+print(f"Accuracy: {accuracy:.5f}")
+
+# ======================
+# Confusion Matrix: print & save
+# ======================
+import os
 import matplotlib.pyplot as plt
-
-# Tính Balanced Accuracy
-balanced_acc = balanced_accuracy_score(y_test, y_pred)
-print(f"Balanced Accuracy: {balanced_acc:.5f}")
-
-# Vẽ Confusion Matrix
-cm = confusion_matrix(y_test, y_pred)
-plt.figure(figsize=(8, 6))
-ConfusionMatrixDisplay(cm, display_labels=['Non-Diabetes', 'Diabetes']).plot(cmap='Blues', values_format='d')
-plt.title('Confusion Matrix')
-
-plt.xlabel('Predicted Label')
-plt.ylabel('True Label')
-plt.grid(False)
-plt.show()
-
 import joblib
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import pickle
+os.makedirs("reports", exist_ok=True)
 
-# Lưu mô hình
-joblib.dump(stack_model, 'GAN_stacking_model.joblib')
+# Counts
+cm = confusion_matrix(y_test, y_pred_adjusted)
+print("\nConfusion Matrix (counts):")
+print(cm)
+
+
+fig, ax = plt.subplots(figsize=(5, 5))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[0, 1])
+disp.plot(ax=ax, values_format='d', colorbar=False)
+ax.set_title("Confusion Matrix (Counts)")
+plt.tight_layout()
+fig.savefig("reports/confusion_matrix.png", dpi=300)
+plt.close(fig)
+
+# Normalized (row-wise)
+cm_norm = confusion_matrix(y_test, y_pred_adjusted, normalize='true')
+print("\nConfusion Matrix (row-normalized):")
+print(np.round(cm_norm, 3))
+
+
+fig2, ax2 = plt.subplots(figsize=(5, 5))
+disp2 = ConfusionMatrixDisplay(confusion_matrix=cm_norm, display_labels=[0, 1])
+disp2.plot(ax=ax2, values_format='.2f', colorbar=False)
+ax2.set_title("Confusion Matrix (Row-normalized)")
+plt.tight_layout()
+fig2.savefig("reports/confusion_matrix_normalized.png", dpi=300)
+plt.close(fig2)
+
+
+# ======================
+# Save model & preprocessors
+# ======================
+os.makedirs('model', exist_ok=True)
+lstm_model.save('model/lstm_gan_model.h5')
+joblib.dump(scaler, 'scaler.pkl')
+
+with open('model/GAN+LSTM.pkl', 'wb') as f:
+    pickle.dump(history.history, f)
 
