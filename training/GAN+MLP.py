@@ -45,6 +45,12 @@ def data_preprocessing(X, y, fit):
     # 🔎 Kiểm tra và xử lý giá trị âm trước khi áp dụng log-transform
     if (X < 0).any():
         print("⚠️ Warning: Negative values detected in X_train. Log transformation might fail.")
+    global pca
+    if fit:
+        pca = PCA(n_components=0.99)
+        X = pca.fit_transform(X)
+    else:
+        X = pca.transform(X)
 
 
     return X, y
