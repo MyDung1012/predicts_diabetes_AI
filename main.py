@@ -460,23 +460,29 @@ with tab1:
                 "age": [age],
                 "hypertension": [htn],
                 "heart_disease": [heart],
-                "smoking_history": [smoke],
                 "bmi": [bmi],
                 "HbA1c_level": [hba1c],
                 "blood_glucose_level": [glucose]
             })
 
-            input_df = pd.get_dummies(input_df, columns=['smoking_history'], drop_first=True)
+            # Manually create smoking history columns (matching training preprocessing)
+            smoking_columns = {
+                'smoking_history_current': 1 if smoke == 'current' else 0,
+                'smoking_history_ever': 1 if smoke == 'ever' else 0,
+                'smoking_history_former': 1 if smoke == 'former' else 0,
+                'smoking_history_never': 1 if smoke == 'never' else 0,
+                'smoking_history_not current': 1 if smoke == 'not current' else 0
+            }
             
+            for col, value in smoking_columns.items():
+                input_df[col] = value
+            
+            # Final column order (matches training data)
             expected_columns = ['gender', 'age', 'hypertension', 'heart_disease', 'bmi', 
                               'HbA1c_level', 'blood_glucose_level',
                               'smoking_history_current', 'smoking_history_ever', 
                               'smoking_history_former', 'smoking_history_never', 
                               'smoking_history_not current']
-            
-            for col in expected_columns:
-                if col not in input_df.columns:
-                    input_df[col] = 0
             
             input_df = input_df[expected_columns]
                     
@@ -520,20 +526,24 @@ with tab1:
                             "blood_glucose_level": [float(glucose)]
                         })
                         
+                        # For GAN preprocessing (also uses drop_first=True, drops 'No Info')
                         smoking_cols = ['smoking_history_current', 'smoking_history_ever', 
-                                      'smoking_history_former', 'smoking_history_not current']
+                                      'smoking_history_former', 'smoking_history_never', 
+                                      'smoking_history_not current']
                         for col in smoking_cols:
                             input_raw[col] = 0.0
-                        if smoke != "never" and smoke != "No Info":
-                            smoke_col = f"smoking_history_{smoke}"
-                            if smoke_col in smoking_cols:
-                                input_raw[smoke_col] = 1.0
                         
-
                         if smoke == "never":
                             input_raw["smoking_history_never"] = 1.0
-                        else:
-                            input_raw["smoking_history_never"] = 0.0
+                        elif smoke == "current":
+                            input_raw["smoking_history_current"] = 1.0
+                        elif smoke == "ever":
+                            input_raw["smoking_history_ever"] = 1.0
+                        elif smoke == "former":
+                            input_raw["smoking_history_former"] = 1.0
+                        elif smoke == "not current":
+                            input_raw["smoking_history_not current"] = 1.0
+                        # Note: 'No Info' results in all columns = 0 (dropped by drop_first=True)
 
                         log_transformer = loaded.get('log_transformer')
                         scaler_gan = loaded.get('scaler') 
@@ -665,7 +675,7 @@ st.markdown("---")
 st.markdown("""
     <div style="text-align: center; margin-top: 30px;">
         <p style="font-size: 14px; font-weight: bold; margin-bottom: 10px; color: #1f77b4;">
-            DVHD: Hoàng Văn Dũng
+            GVHD: Hoàng Văn Dũng
         </p>
         <p style="font-size: 14px; margin-bottom: 0; color: #FFD700;">
             Sinh viên thực hiện đề tài: Đặng Cửu Dương, Lê Thị Mỹ Dung
