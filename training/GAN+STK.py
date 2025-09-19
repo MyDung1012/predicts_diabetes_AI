@@ -246,7 +246,15 @@ fig_n.savefig("reports/confusion_matrix_normalized_GAN_STK.png", dpi=300)
 plt.close(fig_n)
 
 # ======================
-# 10) Save model
+# 10) Save model với preprocessing components
 # ======================
-joblib.dump(stack_model, 'GAN_stacking_model.joblib')
-print("\n✅ Saved model: GAN_stacking_model.joblib")
+# Lưu cả model và preprocessing components
+model_package = {
+    'model': stack_model,
+    'scaler': scaler,
+    'pca': pca,
+    'log_transformer': FunctionTransformer(np.log1p, validate=True)
+}
+
+joblib.dump(model_package, 'model/GAN_stacking_model.joblib')
+print("\n✅ Saved model with preprocessing components: model/GAN_stacking_model.joblib")

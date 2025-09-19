@@ -3,6 +3,7 @@ import io
 import pickle
 import warnings
 from typing import Dict, List, Optional, Tuple
+import json
 
 import numpy as np
 import pandas as pd
@@ -10,7 +11,7 @@ import pandas as pd
 import streamlit as st
 from training.preprocessor import DataPreprocessor
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.metrics import (
     accuracy_score,
@@ -21,6 +22,7 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix,
 )
+from sklearn.metrics.pairwise import cosine_similarity
 
 warnings.filterwarnings("ignore")
 
@@ -36,8 +38,7 @@ except Exception:  # TensorFlow not available
 # App Title & Layout
 # =============================
 st.set_page_config(page_title="Diabetes Modeling Suite", layout="wide")
-st.title("🩺 Diabetes Modeling Suite — Train, Compare, Predict")
-st.caption("Upload or use the bundled dataset, evaluate your trained models, and predict for a new patient.")
+st.title("🩺 Diabetes Modeling Suite — Suitable Diet Suggestions")
 
 # =============================
 # 0) Data loading helpers
@@ -59,15 +60,20 @@ def load_dataset(file: Optional[io.BytesIO] = None) -> pd.DataFrame:
 
 def preprocess_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
     df = df.copy()
-    if "diabetes" not in df.columns:
-        st.error("❌ Dataset thiếu cột `diabetes` (nhãn). Hãy tải dataset đúng định dạng.")
-        st.stop()
     df.dropna(inplace=True)
+    if "gender" not in df.columns:
+        df["gender"] = 0 
     df["gender"] = df["gender"].map({"Male": 1, "Female": 0}).fillna(0)
+    if "smoking_history" not in df.columns:
+        df["smoking_history"] = "never"
     df = pd.get_dummies(df, columns=["smoking_history"], drop_first=True)
     df.fillna(0, inplace=True)
-    y = df["diabetes"].astype("int32")
-    X = df.drop(["diabetes"], axis=1).astype("float32")
+    if "diabetes" in df.columns:
+        y = df["diabetes"].astype("int32")
+        X = df.drop(["diabetes"], axis=1).astype("float32")
+    else:
+        y = None
+        X = df.astype("float32")
     return X, y
 
 # ======================================
@@ -191,8 +197,34 @@ def pretty_label(pred: int) -> str:
 # Sidebar - Data & Settings
 # =============================
 with st.sidebar:
+    st.markdown("""
+        <style>
+            [data-testid="stSidebar"] img {
+                width: 600px !important;  /* tăng size ảnh lên 600px */
+                max-width: none !important;
+                margin-left: -160px !important;  /* điều chỉnh margin để căn giữa */
+                margin-top: -150px !important;  /* giảm khoảng trống phía trên */
+                margin-bottom: -50px !important;  /* giảm khoảng cách phía dưới */
+                position: relative !important;
+                z-index: 1000 !important;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+    try:
+        
+        st.sidebar.image("logo.png", use_container_width=False)
+    except:
+        st.sidebar.markdown("""
+            <div style="text-align: center; font-size: 3em; margin: 50px 0; color: #1f77b4;">
+                🩺 Diabetes AI
+            </div>
+        """, unsafe_allow_html=True)
+
+
+
+    
     st.header("⚙️ Settings")
-    uploaded = st.file_uploader("Upload CSV (tùy chọn)", type=["csv"])
     threshold = st.slider("Decision threshold", 0.05, 0.95, 0.70, 0.05)
     choice_eval_key = st.selectbox("Select best by", ["ROC AUC", "F1-score", "Accuracy"])
     use_ensemble = st.checkbox("Use ensemble (average probability)", value=True)
@@ -200,16 +232,16 @@ with st.sidebar:
     st.caption("Model files scanned from working directory:")
     st.code("\n".join([m for m in MODEL_FILES if os.path.exists(m)]) or "(none)")
 
-# Load data
-raw_df = load_dataset(uploaded)
+raw_df = load_dataset(None)
 X_all, y_all = preprocess_dataframe(raw_df)
 
-# Split (fit transformers & silent eval)
-X_train, X_test, y_train, y_test = train_test_split(
-    X_all, y_all, test_size=0.3, random_state=42, stratify=y_all
-)
-
-transformer_cache = TransformerCache(X_train)
+if y_all is not None:
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_all, y_all, test_size=0.3, random_state=42, stratify=y_all
+    )
+    transformer_cache = TransformerCache(X_train)
+else:
+    transformer_cache = None
 
 # =============================
 # Silent evaluation (no UI table)
@@ -292,200 +324,45 @@ def evaluate_all_models_silent(
     return df, probas_list, model_debug
 
 with st.spinner("Loading models..."):
-    metrics_df, probas, model_dbg = evaluate_all_models_silent(X_test, y_test, threshold)
+    if y_all is not None:
+        metrics_df, probas, model_dbg = evaluate_all_models_silent(X_test, y_test, threshold)
+        ok_df = metrics_df[metrics_df["status"] == "OK"].copy()
+        if ok_df.empty:
+            st.error("Không có mô hình nào load được hoặc dự đoán thành công.")
+            st.stop()
 
-ok_df = metrics_df[metrics_df["status"] == "OK"].copy()
-if ok_df.empty:
-    st.error("Không có mô hình nào load được hoặc dự đoán thành công.")
-    st.stop()
+        # Best model (silent)
+        if choice_eval_key == "ROC AUC":
+            best_row = ok_df.loc[ok_df["ROC AUC"].idxmax()]
+        elif choice_eval_key == "F1-score":
+            best_row = ok_df.loc[ok_df["F1-score"].idxmax()]
+        else:
+            best_row = ok_df.loc[ok_df["Accuracy"].idxmax()]
 
-# Best model (silent)
-if choice_eval_key == "ROC AUC":
-    best_row = ok_df.loc[ok_df["ROC AUC"].idxmax()]
-elif choice_eval_key == "F1-score":
-    best_row = ok_df.loc[ok_df["F1-score"].idxmax()]
-else:
-    best_row = ok_df.loc[ok_df["Accuracy"].idxmax()]
+        ens_acc = ens_prec = None
+        if len(probas) > 0:
+            avg_proba_test = np.mean(np.vstack(probas), axis=0)
+            y_pred_ens_test = (avg_proba_test >= threshold).astype(int)
+            ens_acc = accuracy_score(y_test, y_pred_ens_test)
+            ens_prec = precision_score(y_test, y_pred_ens_test, zero_division=0)
 
-# Pre-compute ensemble metrics on test set (for table)
-ens_acc = ens_prec = None
-if len(probas) > 0:
-    avg_proba_test = np.mean(np.vstack(probas), axis=0)
-    y_pred_ens_test = (avg_proba_test >= threshold).astype(int)
-    ens_acc = accuracy_score(y_test, y_pred_ens_test)
-    ens_prec = precision_score(y_test, y_pred_ens_test, zero_division=0)
-
-# Keep some state
-st.session_state["metrics_df"] = metrics_df
-st.session_state["best_model_name"] = best_row["model"]
-st.session_state["use_ensemble"] = use_ensemble
-st.session_state["threshold"] = threshold
-
-# =============================
-# 4) Single Patient Prediction — SHOW ONLY THIS TABLE
-# =============================
-st.markdown("---")
-st.subheader("🧍 Predict for a New Patient")
-
-col1, col2, col3 = st.columns(3)
-with col1:
-    age = st.number_input("Age", min_value=1, max_value=100, value=40, step=1)
-    height = st.number_input("Height (cm)", min_value=50.0, max_value=250.0, value=170.0, step=0.1)
-    weight = st.number_input("Weight (kg)", min_value=10.0, max_value=300.0, value=70.0, step=0.1)
-    bmi = weight / ((height / 100) ** 2)
-    st.number_input("BMI (Calculated)", value=bmi, disabled=True, format="%.2f")
-with col2:
-    gender = st.selectbox("Gender", ["Male", "Female"], index=0)
-    htn = st.selectbox("Hypertension", [0, 1], index=0)
-with col3:
-    heart = st.selectbox("Heart disease", [0, 1], index=0)
-
-col4, col5 = st.columns(2)
-with col4:
-    hba1c = st.number_input("HbA1c level", 0.0, 20.0, 5.5, 0.1)
-with col5:
-    glucose = st.number_input("Blood glucose level", 0.0, 400.0, 120.0, 1.0)
-
-smoke = st.selectbox("Smoking history", SMOKING_LEVELS, index=0)
-
-if st.button("🔮 Predict"):
-    try:
-        # Build a one-row dataframe matching training preprocessing
-        input_df = pd.DataFrame({
-            "gender": [1 if gender == "Male" else 0],
-            "age": [age],
-            "hypertension": [htn],
-            "heart_disease": [heart],
-            "smoking_history": [smoke],
-            "bmi": [bmi],
-            "HbA1c_level": [hba1c],
-            "blood_glucose_level": [glucose]
-        })
-
-        # Apply preprocessing
-        input_df = pd.get_dummies(input_df, columns=['smoking_history'], drop_first=True)
+        st.session_state["metrics_df"] = metrics_df
+        st.session_state["best_model_name"] = best_row["model"]
+        st.session_state["use_ensemble"] = use_ensemble
+        st.session_state["threshold"] = threshold
         
-        # Thêm các cột còn thiếu nếu có
-        expected_columns = ['smoking_history_ever', 'smoking_history_former', 
-                          'smoking_history_never', 'smoking_history_not current', 
-                          'smoking_history_current']
-        for col in expected_columns:
-            if col not in input_df.columns:
-                input_df[col] = 0
-                
-        # Load và áp dụng preprocessor
-        preprocessor = DataPreprocessor.load('model/preprocessor.pkl')
-        X_tmp = preprocessor.transform(input_df)
-        
-        # X_tmp đã là numpy array được xử lý sẵn, không cần transformer_cache nữa
-        
-    except Exception as e:
-        st.error(f"❌ Lỗi trong quá trình tiền xử lý dữ liệu: {str(e)}")
-        st.stop()
-
-    rows_for_table: List[Dict] = []
-    probs_for_ensemble: List[float] = []
-
-    for file in MODEL_FILES:
-        if not os.path.exists(file):
-            continue
-        try:
-            loaded = load_any(file)
-        except Exception:
-            continue
-        model = loaded.get("model") if isinstance(loaded, dict) else loaded
-        if model is None:
-            continue
-
-        # Sử dụng X_tmp đã được preprocessor xử lý sẵn
-        X_in = X_tmp.copy()
-        
-        # Reshape cho LSTM nếu cần
-        if is_lstm_model(file):
-            # X_tmp có shape (1, 11), cần reshape thành (1, 1, 11) cho LSTM
-            X_in = X_in.reshape((X_in.shape[0], 1, X_in.shape[1]))
-
-        try:
-            proba = float(to_proba(model, X_in).ravel()[0])
-        except Exception:
-            continue
-
-        # decide label for this case
-        pred = int(proba >= st.session_state["threshold"])
-        probs_for_ensemble.append(proba)
-
-        rows_for_table.append({
-            "model": file,
-            "probability": round(proba, 4),
-            "label": pretty_label(pred),
-        })
-
-    if len(rows_for_table) == 0:
-        st.error(" Không thể dự đoán với bất kỳ mô hình nào.")
     else:
-        # Ensemble row
-        if st.session_state["use_ensemble"] and len(probs_for_ensemble) > 0:
-            final_proba = float(np.mean(probs_for_ensemble))
-            pred = int(final_proba >= st.session_state["threshold"])
-            rows_for_table.append({
-                "model": "Ensemble (average)",
-                "probability": round(final_proba, 4),
-                "label": pretty_label(pred),
-            })
-
-        result_df = pd.DataFrame(rows_for_table).sort_values("probability", ascending=False).reset_index(drop=True)
-        # Reorder columns - chỉ còn 3 cột
-        result_df = result_df[["model", "probability", "label"]]
-        st.subheader("📋 Kết quả cho ca bệnh vừa nhập")
-        st.dataframe(result_df, use_container_width=True)
+        st.info("Đã tải dữ liệu bệnh nhân mới. Chỉ thực hiện dự đoán, không đánh giá mô hình.")
 
 # =============================
-# Done
+# Food Recommender Configuration
 # =============================
-st.caption("Tip: place this file alongside your saved model files and `diabetes_prediction_dataset.csv`, then run `streamlit run app_streamlit_diabetes.py`.")
-
-
-
-
-
-
-
-
-
-
-# =============================
-# ==== FOOD RECOMMENDER ADD-ON (append-only)
-# =============================
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.preprocessing import StandardScaler
-import json
-
-# ---- Cấu hình & cột bắt buộc ----
-FOOD_CSV_CANDIDATES = ["food/food_data.csv", "food_data.csv"]  # ưu tiên file trong thư mục food/
+FOOD_CSV_CANDIDATES = ["food/food_data.csv", "food_data.csv"]
 FOOD_DEFAULT_OUTPUT = "food.json"
+FOOD_FEATURES_BASE = ["Dietary Preference", "heart_disease", "hypertension", "BMI", "Daily Calorie Target"]
+FOOD_WEIGHTS = {"Dietary Preference": 3.0, "heart_disease": 2.0, "hypertension": 2.0, "BMI": 1.0, "Daily Calorie Target": 1.0}
+FOOD_REQUIRED_EXPORT_COLS = ["Breakfast Suggestion","Lunch Suggestion","Dinner Suggestion","Snack Suggestion","Protein","Sugar","Sodium","Carbohydrates","Fiber","Fat","Calories"]
 
-FOOD_FEATURES_BASE = [
-    "Dietary Preference",
-    "heart_disease",
-    "hypertension",
-    "BMI",
-    "Daily Calorie Target",
-]
-
-FOOD_WEIGHTS = {
-    "Dietary Preference": 3.0,
-    "heart_disease": 2.0,
-    "hypertension": 2.0,
-    "BMI": 1.0,
-    "Daily Calorie Target": 1.0,
-}
-
-FOOD_REQUIRED_EXPORT_COLS = [
-    "Breakfast Suggestion","Lunch Suggestion","Dinner Suggestion","Snack Suggestion",
-    "Protein","Sugar","Sodium","Carbohydrates","Fiber","Fat","Calories"
-]
-
-# ---- Hàm tiện ích ----
 def _food_kcal(weight, height, activity_level, gender, age):
     gender = str(gender).lower()
     if gender == "male":
@@ -510,7 +387,6 @@ def _food_build_weight_vector(columns, weights_dict):
 
 def _food_recommend(user_profile, df, top_k=5):
     data = df[FOOD_FEATURES_BASE].copy()
-
     u = {
         "Dietary Preference": float(user_profile.get("Dietary Preference", data["Dietary Preference"].mode()[0])),
         "heart_disease": float(user_profile.get("heart_disease", 0)),
@@ -519,15 +395,12 @@ def _food_recommend(user_profile, df, top_k=5):
         "Daily Calorie Target": float(user_profile.get("Daily Calorie Target", float(data["Daily Calorie Target"].median()))),
     }
     user_df = pd.DataFrame([u], columns=data.columns)
-
     numeric_continuous = ["BMI", "Daily Calorie Target"]
     data_scaled, user_scaled = _food_standardize_numeric(data.copy(), user_df.copy(), numeric_continuous)
-
-    W  = _food_build_weight_vector(data_scaled.columns.tolist(), FOOD_WEIGHTS)
+    W = _food_build_weight_vector(data_scaled.columns.tolist(), FOOD_WEIGHTS)
     Xw = data_scaled.values * W
     Uw = user_scaled.values * W
     sims = cosine_similarity(Uw, Xw)[0]
-
     out = df.copy()
     out["similarity"] = sims
     out = out.sort_values("similarity", ascending=False).reset_index(drop=True)
@@ -539,92 +412,267 @@ def _food_load_default_csv():
             return pd.read_csv(p), p
     raise FileNotFoundError(", ".join(FOOD_CSV_CANDIDATES))
 
-# ---- UI ----
+# =============================
+# 4) Tabs for Prediction and Meal Recommendation
+# =============================
 st.markdown("---")
-st.subheader("🥗 Personalized Meal Recommendation")
 
-# Cột nhập liệu
-c1, c2, c3 = st.columns(3)
-with c1:
-    food_age = st.number_input("Age", 1, 100, 25, key="food_age")
-    food_height = st.number_input("Height (cm)", 80.0, 250.0, 175.0, 0.1, key="food_h")
-    food_weight = st.number_input("Weight (kg)", 20.0, 250.0, 70.0, 0.1, key="food_w")
-with c2:
-    food_activity = st.select_slider("Activity Level (0–4)", options=[0,1,2,3,4], value=1, key="food_act")
-    food_htn = st.selectbox("Hypertension", [0, 1], index=1, key="food_htn")
-    food_hd = st.selectbox("Heart disease", [0, 1], index=0, key="food_hd")
-with c3:
-    food_gender = st.selectbox("Gender", ["Female", "Male"], index=0, key="food_gender")
-    food_pref_label = st.selectbox("Dietary Preference", ["Omnivore", "Vegetarian", "Vegan"], index=0, key="food_pref")
+tab1, tab2 = st.tabs(["🧍 Predict for a New Patient", "🥗 Personalized Meal Recommendation"])
+st.markdown("""
+    <style>
+    .stTabs [data-baseweb="tab"] {
+        font-size: 1.5rem;
+        font-weight: bold;
+        padding: 12px 32px;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-# Tính BMI & kcal live
-_food_bmi_val = _food_bmi(food_weight, food_height)
-_food_kcal_val = _food_kcal(food_weight, food_height, food_activity, food_gender, food_age)
-met1, met2 = st.columns(2)
-with met1:
-    st.metric("BMI", f"{_food_bmi_val:.2f}")
-with met2:
-    st.metric("Daily Calorie Target", f"{int(_food_kcal_val):,} kcal")
+# =============================
+# TAB 1: Single Patient Prediction
+# =============================
+with tab1:
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        age = st.number_input("Age", min_value=1, max_value=100, value=40, step=1)
+        height = st.number_input("Height (cm)", min_value=50.0, max_value=250.0, value=170.0, step=0.1)
+        weight = st.number_input("Weight (kg)", min_value=10.0, max_value=300.0, value=70.0, step=0.1)
+        bmi = weight / ((height / 100) ** 2)
+        st.number_input("BMI (Calculated)", value=bmi, disabled=True, format="%.2f")
+    with col2:
+        gender = st.selectbox("Gender", ["Male", "Female"], index=0)
+        htn = st.selectbox("Hypertension", [0, 1], index=0)
+    with col3:
+        heart = st.selectbox("Heart disease", [0, 1], index=0)
 
-# File uploader (tùy chọn)
-up_food = st.file_uploader("Upload your `food_data.csv` (optional). Nếu không upload, app sẽ tìm trong: "
-                           + ", ".join(FOOD_CSV_CANDIDATES),
-                           type=["csv"], key="food_uploader")
+    col4, col5 = st.columns(2)
+    with col4:
+        hba1c = st.number_input("HbA1c level", 0.0, 20.0, 5.5, 0.1)
+    with col5:
+        glucose = st.number_input("Blood glucose level", 0.0, 400.0, 120.0, 1.0)
 
-# Tham số gợi ý/xuất JSON
-colk, coln = st.columns(2)
-with colk:
-    food_topk = st.slider("Top-K suggestions", 1, 10, 5, 1, key="food_topk")
-with coln:
-    export_top_n = st.number_input("Export top-N to JSON", 1, 5, min(food_topk, 2), key="food_topn")
+    smoke = st.selectbox("Smoking history", SMOKING_LEVELS, index=0)
 
-if st.button("🔎 Recommend Meals", key="food_btn"):
-    # Load CSV
-    try:
-        if up_food is not None:
-            df_food = pd.read_csv(up_food)
-            csv_source = "(uploaded file)"
+    if st.button("🔮 Predict"):
+        try:
+            input_df = pd.DataFrame({
+                "gender": [1 if gender == "Male" else 0],
+                "age": [age],
+                "hypertension": [htn],
+                "heart_disease": [heart],
+                "smoking_history": [smoke],
+                "bmi": [bmi],
+                "HbA1c_level": [hba1c],
+                "blood_glucose_level": [glucose]
+            })
+
+            input_df = pd.get_dummies(input_df, columns=['smoking_history'], drop_first=True)
+            
+            expected_columns = ['gender', 'age', 'hypertension', 'heart_disease', 'bmi', 
+                              'HbA1c_level', 'blood_glucose_level',
+                              'smoking_history_current', 'smoking_history_ever', 
+                              'smoking_history_former', 'smoking_history_never', 
+                              'smoking_history_not current']
+            
+            for col in expected_columns:
+                if col not in input_df.columns:
+                    input_df[col] = 0
+            
+            input_df = input_df[expected_columns]
+                    
+            preprocessor = DataPreprocessor.load('model/preprocessor.pkl')
+            X_tmp = preprocessor.transform(input_df)
+            
+            
+        except Exception as e:
+            st.error(f"❌ Lỗi trong quá trình tiền xử lý dữ liệu: {str(e)}")
+            st.stop()
+
+        rows_for_table: List[Dict] = []
+        probs_for_ensemble: List[float] = []
+
+        for file in MODEL_FILES:
+            if not os.path.exists(file):
+                continue
+                
+            try:
+                loaded = load_any(file)
+            except Exception:
+                continue
+                
+            model = loaded.get("model") if isinstance(loaded, dict) else loaded
+            if model is None:
+                continue
+
+            X_in = X_tmp.copy()
+            
+            if "gan_stacking" in file.lower():
+
+                if isinstance(loaded, dict) and 'scaler' in loaded and 'pca' in loaded:
+                    try:
+                        input_raw = pd.DataFrame({
+                            "gender": [1 if gender == "Male" else 0],
+                            "age": [float(age)],
+                            "hypertension": [float(htn)],
+                            "heart_disease": [float(heart)],
+                            "bmi": [float(bmi)],
+                            "HbA1c_level": [float(hba1c)],
+                            "blood_glucose_level": [float(glucose)]
+                        })
+                        
+                        smoking_cols = ['smoking_history_current', 'smoking_history_ever', 
+                                      'smoking_history_former', 'smoking_history_not current']
+                        for col in smoking_cols:
+                            input_raw[col] = 0.0
+                        if smoke != "never" and smoke != "No Info":
+                            smoke_col = f"smoking_history_{smoke}"
+                            if smoke_col in smoking_cols:
+                                input_raw[smoke_col] = 1.0
+                        
+
+                        if smoke == "never":
+                            input_raw["smoking_history_never"] = 1.0
+                        else:
+                            input_raw["smoking_history_never"] = 0.0
+
+                        log_transformer = loaded.get('log_transformer')
+                        scaler_gan = loaded.get('scaler') 
+                        pca_gan = loaded.get('pca')
+
+                        X_gan = log_transformer.transform(input_raw.values)
+                        X_gan = pd.DataFrame(X_gan, columns=input_raw.columns).fillna(0)
+                        
+                        X_gan_scaled = scaler_gan.transform(X_gan.values)
+                        
+                        X_in = pca_gan.transform(X_gan_scaled)
+                        
+                    except Exception as e:
+                        X_in = X_tmp.copy()
+                        if X_in.shape[1] > 10:
+                            X_in = X_in[:, :10]
+                else:
+                    X_in = X_tmp.copy()
+                    if X_in.shape[1] == 11:
+                        X_in = X_in[:, [0,1,2,3,4,5,6,7,8,9]]  
+                        
+            elif "GAN" in file.upper() or "gan" in file.lower():
+                if X_in.shape[1] == 11:
+                    X_in = X_in[:, :10]
+            
+            if is_lstm_model(file):
+                X_in = X_in.reshape((X_in.shape[0], 1, X_in.shape[1]))
+
+            try:
+                proba = float(to_proba(model, X_in).ravel()[0])
+            except Exception:
+                continue
+            pred = int(proba >= st.session_state.get("threshold", 0.7))
+            probs_for_ensemble.append(proba)
+
+            model_name = os.path.basename(file).replace(".joblib", "").replace(".h5", "").replace("_", " ").title()
+            
+            rows_for_table.append({
+                "model": model_name,
+                "probability": round(proba, 4),
+                "label": pretty_label(pred),
+            })
+
+        if st.session_state.get("use_ensemble", False) and len(probs_for_ensemble) > 0:
+            final_proba = float(np.mean(probs_for_ensemble))
+            pred = int(final_proba >= st.session_state.get("threshold", 0.7))
+            rows_for_table.append({
+                "model": "Ensemble (Average)",
+                "probability": round(final_proba, 4),
+                "label": pretty_label(pred),
+            })
+
+        if len(rows_for_table) == 0:
+            st.error("❌ Không thể dự đoán với bất kỳ mô hình nào.")
         else:
+            result_df = pd.DataFrame(rows_for_table).sort_values("probability", ascending=False).reset_index(drop=True)
+            # Reorder columns - chỉ còn 3 cột
+            result_df = result_df[["model", "probability", "label"]]
+            st.subheader("📋 Kết quả dự đoán cho tất cả mô hình")
+            st.dataframe(result_df, use_container_width=True)
+
+# =============================
+# TAB 2: Personalized Meal Recommendation  
+# =============================
+# TAB 2: Personalized Meal Recommendation  
+# =============================
+with tab2:
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        food_age = st.number_input("Age", 1, 100, 25, key="food_age")
+        food_height = st.number_input("Height (cm)", 80.0, 250.0, 175.0, 0.1, key="food_h")
+        food_weight = st.number_input("Weight (kg)", 20.0, 250.0, 70.0, 0.1, key="food_w")
+    with c2:
+        food_activity = st.select_slider("Activity Level (0–4)", options=[0,1,2,3,4], value=1, key="food_act")
+        food_htn = st.selectbox("Hypertension", [0, 1], index=1, key="food_htn")
+        food_hd = st.selectbox("Heart disease", [0, 1], index=0, key="food_hd")
+    with c3:
+        food_gender = st.selectbox("Gender", ["Female", "Male"], index=0, key="food_gender")
+        food_pref_label = st.selectbox("Dietary Preference", ["Omnivore", "Vegetarian"], index=0, key="food_pref")
+
+    _food_bmi_val = _food_bmi(food_weight, food_height)
+    _food_kcal_val = _food_kcal(food_weight, food_height, food_activity, food_gender, food_age)
+    met1, met2 = st.columns(2)
+    with met1:
+        st.metric("BMI", f"{_food_bmi_val:.2f}")
+    with met2:
+        st.metric("Daily Calorie Target", f"{int(_food_kcal_val):,} kcal")
+
+    colk, coln = st.columns(2)
+    with colk:
+        food_topk = st.slider("Top-K suggestions", 1, 10, 5, 1, key="food_topk")
+
+    if st.button("🔎 Recommend Meals", key="food_btn"):
+
+        try:
             df_food, found_path = _food_load_default_csv()
             csv_source = found_path
-    except Exception as e:
-        st.error(f"❌ Cannot load food dataset: {e}")
-        st.stop()
+        except Exception as e:
+            st.error(f"❌ Cannot load food dataset: {e}")
+            st.stop()
 
-    # Kiểm tra cột bắt buộc
-    missing = [c for c in FOOD_FEATURES_BASE if c not in df_food.columns]
-    if missing:
-        st.error(f"Dataset is missing required feature columns: {missing}")
-        st.stop()
 
-    pref_map = {"Omnivore": 1.0, "Vegetarian": 0.0, "Vegan": -1.0}
-    user_profile = {
-        "Dietary Preference": pref_map.get(food_pref_label, 1.0),
-        "heart_disease": food_hd,
-        "hypertension": food_htn,
-        "BMI": _food_bmi_val,
-        "Daily Calorie Target": _food_kcal_val,
-    }
+        missing = [c for c in FOOD_FEATURES_BASE if c not in df_food.columns]
+        if missing:
+            st.error(f"Dataset is missing required feature columns: {missing}")
+            st.stop()
 
-    try:
-        top_df = _food_recommend(user_profile=user_profile, df=df_food, top_k=int(food_topk))
-    except Exception as e:
-        st.error(f"Recommendation failed: {e}")
-        st.stop()
+        pref_map = {"Omnivore": 1.0, "Vegetarian": 0.0}
+        user_profile = {
+            "Dietary Preference": pref_map.get(food_pref_label, 1.0),
+            "heart_disease": food_hd,
+            "hypertension": food_htn,
+            "BMI": _food_bmi_val,
+            "Daily Calorie Target": _food_kcal_val,
+        }
 
-    st.success(f"✅ Generated recommendations from: {csv_source}")
-    st.dataframe(top_df, use_container_width=True)
+        try:
+            top_df = _food_recommend(user_profile=user_profile, df=df_food, top_k=int(food_topk))
+        except Exception as e:
+            st.error(f"Recommendation failed: {e}")
+            st.stop()
 
-    # Xuất JSON top-N (nếu có đủ cột)
-    try:
-        export_cols = [c for c in FOOD_REQUIRED_EXPORT_COLS if c in top_df.columns]
-        export_df = top_df.reindex(columns=export_cols).head(int(export_top_n))
-        records = export_df.to_dict(orient="records")
-        st.download_button(
-            label="💾 Download JSON",
-            data=json.dumps(records, ensure_ascii=False, indent=2).encode("utf-8"),
-            file_name=FOOD_DEFAULT_OUTPUT,
-            mime="application/json",
-        )
-    except Exception as e:
-        st.warning(f"Export note: {e}")
+        st.dataframe(top_df, use_container_width=True)
+
+# =============================
+# Footer - Thông tin đề tài
+# =============================
+st.markdown("---")
+st.markdown("""
+    <div style="text-align: center; margin-top: 30px;">
+        <p style="font-size: 14px; font-weight: bold; margin-bottom: 10px; color: #1f77b4;">
+            DVHD: Hoàng Văn Dũng
+        </p>
+        <p style="font-size: 14px; margin-bottom: 0; color: #FFD700;">
+            Sinh viên thực hiện đề tài: Đặng Cửu Dương, Lê Thị Mỹ Dung
+        </p>
+    </div>
+""", unsafe_allow_html=True)
+
+# =============================
+# Done
+# =============================
